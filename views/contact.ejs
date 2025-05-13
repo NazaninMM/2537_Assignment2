@@ -1,0 +1,9 @@
+<%- include("templates/header") %>
+
+<h1>Contact Us</h1>
+<form action="/submitEmail" method="post">
+  <input name="email" type="email" placeholder="Enter your email" required>
+  <button type="submit" class="btn btn-primary">Submit</button>
+</form>
+
+<%- include("templates/footer") %>

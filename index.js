@@ -1,11 +1,13 @@
 require("./utils.js");
 require("dotenv").config();
 
+
 const express = require("express");
 const session = require("express-session");
 
 // Initialize the app
 const app = express();
+app.set('view engine', 'ejs');
 
 const Joi = require("joi");
 const bcrypt = require("bcrypt");
@@ -49,8 +51,9 @@ app.use(
 //middleware
 app.use(express.static(__dirname + "/public"));
 app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 
-// Middleware to check authentication
+
 function isAuthenticated(req, res, next) {
   if (req.session.authenticated) {
     return next();
@@ -60,17 +63,10 @@ function isAuthenticated(req, res, next) {
 
 // Routes
 app.get("/", (req, res) => {
-  let html = `
-    <form action = '/login' method='get'>
-        <button>login</button>
-    </form>
-    <form action = '/createUser' method='get'>
-        <button>sign Up</button>
-    </form>
-    `;
 
-  res.send(html);
+  res.render('index');
 });
+
 
 app.get("/nosql-injection", async (req, res) => {
   var username = req.query.user;
@@ -115,35 +111,13 @@ app.post("/submitEmail", (req, res) => {
 
 // sign up
 app.get("/createUser", (req, res) => {
-  var html = `
-    create user
-    <form action='/submitUser' method='post'>
-    <input name='name' type='text' placeholder='name'>
-    <input name='username' type='text' placeholder='username'>
-    <input name='password' type='password' placeholder='password'>
-    <button>Submit</button>
-    </form>
-    `;
-  res.send(html);
+  res.render("createUser");
 });
 
 // login
 app.get("/login", (req, res) => {
   const error = req.query.error;
-  let html = `
-      <h2>Log in</h2>
-      <form action='/loggingin' method='post'>
-        <input name='username' type='text' placeholder='username'>
-        <input name='password' type='password' placeholder='password'>
-        <button>Submit</button>
-      </form>
-    `;
-
-  if (error === "invalid") {
-    html += "<p style='color:red;'>Invalid username or password.</p>";
-  }
-
-  res.send(html);
+  res.render("login", { error: error });
 });
 
 // logging in
@@ -151,32 +125,34 @@ app.post("/loggingin", async (req, res) => {
   const username = req.body.username;
   const password = req.body.password;
 
-  const schema = Joi.string().max(50).required();
-  const validationResult = schema.validate(username);
-  if (validationResult.error != null) {
+  // Joi validation schema for username and password
+  const schema = Joi.object({
+    username: Joi.string().max(50).required(),
+    password: Joi.string().max(20).required()
+  });
+  const validationResult = schema.validate({ username, password });
+  if (validationResult.error) {
     return res.redirect("/login?error=invalid");
   }
 
 
   const result = await userCollection
     .find({ username: username })
-    .project({ username: 1, password: 1, name: 1, _id: 1 })
+    .project({ username: 1, password: 1, name: 1, user_type: 1, _id: 1 })
     .toArray();
 
-  if (result.length !== 1) {
-    console.log("user not found");
-    return res.redirect("/login?error=invalid");
-  }
-
-  if (await bcrypt.compare(password, result[0].password)) {
+  if (result.length === 1 && await bcrypt.compare(password, result[0].password)) {
+    // User authenticated successfully
     req.session.authenticated = true;
     req.session.username = username;
-    req.session.name = result[0].name; // Set the user's name in the session
+    req.session.name = result[0].name;
+    req.session.user_type = result[0].user_type;
+    console.log("SESSION AFTER LOGIN:", req.session);
+
     req.session.cookie.maxAge = expireTime;
 
     return res.redirect("/loggedIn");
   } else {
-    console.log("incorrect password");
     return res.redirect("/login?error=invalid");
   }
 });
@@ -187,113 +163,135 @@ app.get("/loggedIn", (req, res) => {
     return res.redirect("/login");
   }
 
-  let html = `
-      <h1>Hello ${req.session.name}</h1>
-      <form action='/members' method='get'>
-      <button>Go to Members Area</button>
-      </form>
-      <form action='/logout' method='get'>
-      <button>Logout</button>`;
-
-  res.send(html); // ← Send the HTML back
+  res.render("loggedIn", { name: req.session.name });
 });
 
 // submit user
 app.post("/submitUser", async (req, res) => {
-    const { name, username, password } = req.body;
-  
-    // Validate name, username, and password
-    const schema = Joi.object({
-      name: Joi.string().min(1).required(), // Ensure name is not empty
-      username: Joi.string().email().required(),
-      password: Joi.string().max(20).required(),
-    });
-  
-    const validationResult = schema.validate({ name, username, password });
-    if (validationResult.error != null) {
-      console.log(validationResult.error);
-      return res.send(`
+  const { name, username, password } = req.body;
+
+  // Validate name, username, and password
+  const schema = Joi.object({
+    name: Joi.string().min(1).required(), // Ensure name is not empty
+    username: Joi.string().email().required(),
+    password: Joi.string().max(20).required(),
+  });
+
+  const validationResult = schema.validate({ name, username, password });
+  if (validationResult.error != null) {
+    console.log(validationResult.error);
+    return res.send(`
         <p style="color: red;">Invalid input: ${validationResult.error.message}</p>
         <a href="/createUser">Go back to sign-up page</a>
       `);
-    }
-  
-    // Hash the password and insert the user into the database
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-  
-    await userCollection.insertOne({
-      name: name,
-      username: username,
-      password: hashedPassword,
-    });
-    console.log("Inserted user");
-  
-    // Authenticate the user and redirect to members page
-    req.session.authenticated = true;
-    req.session.username = username;
-    req.session.name = name; // Use the user's name for the session
-    req.session.cookie.maxAge = expireTime;
-  
-    res.redirect("/members");
+  }
+
+  // Hash the password and insert the user into the database
+  const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+  await userCollection.insertOne({
+    name: name,
+    username: username,
+    password: hashedPassword,
+    user_type: "user",
   });
-  
+  console.log("Inserted user");
+
+  // Authenticate the user and redirect to members page
+  req.session.authenticated = true;
+  req.session.username = username;
+  req.session.name = name; // Use the user's name for the session
+  req.session.cookie.maxAge = expireTime;
+  req.session.user_type = "user";
+
+  res.redirect("/members");
+});
+
 
 // logout
 app.get("/logout", (req, res) => {
   req.session.destroy((err) => {
-    if (err) {
-      console.error("Error destroying session:", err);
-      return res.status(500).send("An error occurred while logging out.");
-    }
-    res.clearCookie("connect.sid"); // Clear the session cookie
+    res.clearCookie("connect.sid");
     res.redirect("/");
   });
 });
 
-app.get("/members/:id", isAuthenticated, (req, res) => {
-    const cat = req.params.id;
-    let html = "";
-  
-    if (cat == 1) {
-      html += 'cat 1: <img src="/pillow1.jpg" style="width: 250px;" />';
-    } else if (cat == 2) {
-      html += 'cat 2: <img src="/pillow2.jpg" style="width: 250px;" />';
-    } else if (cat == 3) {
-      html += 'cat 3: <img src="/pillow3.jpg" style="width: 250px;" />';
-    } else {
-      html += "invalid cat id: " + cat;
-    }
-  
-    html += `
-        <form action='/logout' method='get'>
-          <button>Sign Out</button>
-        </form>
-      `;
-  
-    res.send(html);
-  });
-
 app.get("/members", isAuthenticated, (req, res) => {
-  const gifs = [
+  const pics = [
     '<img src="/pillow1.jpg" style="width: 250px;" />',
     '<img src="/pillow2.jpg" style="width: 250px;" />',
     '<img src="/pillow3.jpg" style="width: 250px;" />',
   ];
-  const randomGif = gifs[Math.floor(Math.random() * gifs.length)];
+  const randomPic = pics[Math.floor(Math.random() * pics.length)];
 
-  let html = `
-    ${randomGif}
-    <form action='/logout' method='get'>
-      <button>Sign Out</button>
-    </form>
-  `;
-
-  res.send(html);
+  res.render("members", { randomPic: randomPic });
 });
 
-app.use((req, res) => {
-  res.status(404).send("404: Page not found");
+// Middleware to check admin authorization
+function isAdmin(req, res, next) {
+  console.log("Checking admin middleware:");
+  console.log("Session data:", req.session);
+  if (req.session.authenticated && req.session.user_type === "admin") {
+    console.log("✅ Admin access granted");
+    return next();
+  }
+  console.log("❌ Admin access denied");
+  res.status(403).send("Not authorized - Admins only");
+}
+
+
+// Admin page
+app.get("/admin", isAuthenticated, isAdmin, async (req, res) => {
+  const users = await userCollection.find().project({ username: 1, user_type: 1 }).toArray();
+  res.render("admin", { users: users });
 });
+
+// Promote user to admin
+app.get("/promote/:username", isAuthenticated, isAdmin, async (req, res) => {
+  const username = req.params.username;
+
+  // Validate username to prevent NoSQL injection
+  const schema = Joi.string().email().required();
+  const validationResult = schema.validate(username);
+  if (validationResult.error) {
+    return res.status(400).send("Invalid username");
+  }
+
+  await userCollection.updateOne(
+    { username: username },
+    { $set: { user_type: "admin" } }
+  );
+
+  res.redirect("/admin");
+});
+
+// Demote admin to regular user
+app.get("/demote/:username", isAuthenticated, isAdmin, async (req, res) => {
+  const username = req.params.username;
+
+  // Validate username
+  const schema = Joi.string().email().required();
+  const validationResult = schema.validate(username);
+  if (validationResult.error) {
+    return res.status(400).send("Invalid username");
+  }
+
+  await userCollection.updateOne(
+    { username: username },
+    { $set: { user_type: "user" } }
+  );
+
+  res.redirect("/admin");
+});
+
+
+
+app.use((req, res, next) => {
+  console.log('Handling a non-existent route:', req.originalUrl);  // Debugging line
+  res.status(404).render("404");
+});
+
+
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);

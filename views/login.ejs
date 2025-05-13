@@ -1,0 +1,14 @@
+<%- include("templates/header") %>
+
+<h2>Log in</h2>
+<form action="/loggingin" method="post">
+  <input name="username" type="text" placeholder="Username" required>
+  <input name="password" type="password" placeholder="Password" required>
+  <button type="submit" class="btn btn-primary">Submit</button>
+</form>
+
+<% if (error === 'invalid') { %>
+  <p style="color:red;">Invalid username or password.</p>
+<% } %>
+
+<%- include("templates/footer") %>
